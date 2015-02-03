@@ -1,0 +1,5 @@
+name = Test: My Search
+description = Test Project: My Search Implementation
+package = Test
+core = 7.x
+version = 7.x-1.0
