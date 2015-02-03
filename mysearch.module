@@ -1,5 +1,7 @@
 <?php
 
+define('MYSEARCH_LIMIT', 2);
+
 /**
  * Implementation of hook_permission().
  */
@@ -16,37 +18,156 @@ function mysearch_permission() {
  * Implementation of hook_menu().
  */
 function mysearch_menu() {
-  $items['mysearch'] = array(
+//  $items['mysearch'] = array(
+//    'title' => 'Search',
+//    'page callback' => 'mysearch_searchpage',
+//    'access arguments' => array('access mysearch'),
+//    'type' => MENU_SUGGESTED_ITEM,
+//  );
+  $items['mysearch/%'] = array(
     'title' => 'Search',
     'page callback' => 'mysearch_searchpage',
+    'page arguments' => array(1),
     'access arguments' => array('access mysearch'),
-    'type' => MENU_SUGGESTED_ITEM,
+    'type' => MENU_LOCAL_TASK,
   );
   return $items;
 }
 
 /**
- * Menu callback provides a simple list of nodes matching the
- * search term Example: hitting the URL:
- *   http://domain.com/mysearch/example
- * will return a list of links to nodes which have the word
- * example in them.
+ * Implementation of hook_theme().
  */
-function mysearch_searchpage() {
-  $searchterm = arg(1);
-  $query = "
-     SELECT nid
-     FROM node_revisions
-     WHERE body LIKE '%$searchterm%'
-     ";
-  $search_results = db_query($query);
-  $search_results = "<h2>Search for $searchterm</h2><ul>";
-  foreach ($get_node_result as $record) {
-    $node = node_load($record->nid);
-    $search_results .= '<li><a href="/node/'
-            . $node->nid . '" title="' . $node->title . '">'
-            . $node->title . '</a><!-- debugging output: '
-            . print_r($node) . '  --><\li>';
+function mysearch_theme() {
+  $theme['mysearch'] = array(
+    'template' => 'theme/mysearch',
+    'variables' => array(
+      'results' => '',
+      'pager' => '',
+      'message' => '',
+      // Pass additional data to overwrite in preprocess
+      'data' => array(),
+    ),
+  );
+
+  return $theme;
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function mysearch_entity_info_alter(&$entity_info) {
+  $entity_info['node']['view modes']['search_title'] = array(
+    'label' => t('Search Result Item - One Line'),
+    'custom settings' => TRUE,
+  );
+}
+
+/**
+ * Search page menu callback.
+ */
+function mysearch_searchpage($searchterm = '') {
+  // Valiadate input.
+  if (empty($searchterm)) {
+    $searchterm = arg(1);
   }
-  return $search_results;
+
+  $searchterm = trim(urldecode($searchterm));
+
+  if (strlen($searchterm) < 3) {
+    return array(
+      '#theme' => 'mysearch',
+      '#message' => t('Please enter more than 2 symbols'),
+    );
+  }
+
+  // Fetch results.
+  $search_results = _mysearch_results($searchterm);
+
+  // Empty result.
+  if (empty($search_results['count'])) {
+    return array(
+      '#theme' => 'mysearch',
+      '#message' => t('No items found'),
+    );
+  }
+
+  // Process result.
+  $nodes = node_load_multiple($search_results['results']);
+  $render_array = node_view_multiple($nodes, 'search_title');
+  $results = render($render_array);
+  return array(
+    array(
+      '#theme' => 'mysearch',
+      '#message' => format_plural($search_results['count'], 'Found 1 item.', 'Found @count items.'),
+      '#results' => $results,
+      '#data' => array(
+        'count' => $search_results['count'],
+        'results' => $search_results['results'],
+        'nodes' => $nodes,
+      ),
+    ),
+    array(
+      '#theme' => 'pager',
+    )
+  );
+}
+
+/**
+ * Retrieve search results.
+ * @param string $searchterm
+ */
+function _mysearch_results($searchterm) {
+  // Possible solution:
+  // 1. search_api + search_api_solr.
+  // 2. custom node index (clone core node search).
+  // 3. duplicate current node revision fields to myisam table with fulltext
+  // indexes, implements hooks for node delete/insert/update.
+  // 4*. Simple search in node body field with mysql like without relevance.
+  // Build query.
+  global $language;
+  $languages = array_unique(array($language->language, LANGUAGE_NONE));
+
+  $query = db_select('node', 'n');
+  $query->fields('n', array('nid'));
+
+  $query->condition('n.language', $languages);
+  // Add published nodes only, visibled for anonymous.
+  $query->condition('n.status', NODE_PUBLISHED);
+  $query->addMetaData('account', drupal_anonymous_user());
+  $query->addTag('node_access');
+
+  $query->innerJoin('field_data_body', 'body', 'body.revision_id = n.vid');
+  $query->condition('body.body_value', '%' . db_like($searchterm) . '%', 'LIKE');
+
+  // Allow alter query in custom modules.
+  drupal_alter('mysearch_query', $query);
+
+  // Fetch results.
+  $count = $query->countQuery()->execute()->fetchField();
+  $results = $query->extend('PagerDefault')->limit(MYSEARCH_LIMIT)->execute()->fetchCol();
+
+  return array(
+    'results' => $results,
+    'count' => $count,
+  );
+}
+
+/**
+ * Override or insert variables into the node template.
+ * Move to template.php.
+ * View mode: search_title.
+ */
+function mysearch_preprocess_node(&$vars) {
+  if (isset($vars['elements']['#view_mode']) && $vars['elements']['#view_mode'] == 'search_title') {
+    // Add template sugestions.
+    $vars['theme_hook_suggestions'][] = 'node__search_title';
+  }
+
+  // Additional variable processing.
+  //$node = &$vars['node'];
+  //$node_wrapper = entity_metadata_wrapper('node', $node);
+  //if (!$node_wrapper) {
+  //  return;
+  //}
+  //$vars['html'] = l($node->title, 'node/' . $node->nid);
 }
